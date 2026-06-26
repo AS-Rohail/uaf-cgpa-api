@@ -3,6 +3,8 @@ from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
 import re
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 CORS(app)
@@ -44,7 +46,7 @@ def fetch_uaf_result(reg_no):
         })
 
         # Get login page first for cookies
-        login_page = session.get(UAF_RESULT_URL, timeout=15)
+        login_page = session.get(UAF_RESULT_URL, timeout=15, verify=False)
         soup = BeautifulSoup(login_page.text, 'html.parser')
 
         # Get logintoken
@@ -57,7 +59,7 @@ def fetch_uaf_result(reg_no):
             'logintoken': logintoken
         }
 
-        result_resp = session.post(UAF_RESULT_URL, data=result_data, timeout=15)
+        result_resp = session.post(UAF_RESULT_URL, data=result_data, timeout=15, verify=False)
         result_soup = BeautifulSoup(result_resp.text, 'html.parser')
 
         # Parse student name
