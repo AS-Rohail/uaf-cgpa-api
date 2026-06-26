@@ -37,151 +37,151 @@ def marks_to_grade(marks):
 def fetch_uaf_result(reg_no):
     try:
         session = requests.Session()
-        headers = {
+        session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
             'Referer': 'https://lms.uaf.edu.pk/login/index.php',
-        }
-        session.headers.update(headers)
+        })
 
-        # Step 1: Get login page
+        # Step 1: Get login page for token & cookies
         login_url = 'https://lms.uaf.edu.pk/login/index.php'
         login_page = session.get(login_url, timeout=20, verify=False)
         soup = BeautifulSoup(login_page.text, 'html.parser')
 
-        # Debug: print page title
-        print(f"Page title: {soup.title.string if soup.title else 'No title'}")
+        # Get token from result form
+        token_input = soup.find('input', {'name': 'token'})
+        token = token_input['value'] if token_input else ''
 
-        # Step 2: Find all forms on page
-        forms = soup.find_all('form')
-        print(f"Found {len(forms)} forms")
-        for i, form in enumerate(forms):
-            print(f"Form {i}: action={form.get('action')}, id={form.get('id')}")
-            inputs = form.find_all('input')
-            for inp in inputs:
-                print(f"  Input: name={inp.get('name')}, type={inp.get('type')}, id={inp.get('id')}")
+        # Step 2: Submit to correct URL with correct field name
+        result_url = 'https://lms.uaf.edu.pk/course/uaf_student_result.php'
+        data = {
+            'REG': reg_no,
+            'token': token,
+        }
 
-        # Step 3: Try different field names for reg number
-        # UAF might use different field names
-        possible_fields = ['regNo', 'regno', 'reg_no', 'registration', 'username', 'reg', 'studentid', 'rollno']
-        
-        # Get logintoken
-        token_input = soup.find('input', {'name': 'logintoken'})
-        logintoken = token_input['value'] if token_input else ''
+        result_resp = session.post(result_url, data=data, timeout=20, verify=False)
+        result_soup = BeautifulSoup(result_resp.text, 'html.parser')
 
-        result_html = None
-        
-        for field in possible_fields:
-            try:
-                data = {
-                    field: reg_no,
-                    'logintoken': logintoken,
-                }
-                resp = session.post(login_url, data=data, timeout=20, verify=False)
-                if resp.status_code == 200 and len(resp.text) > 1000:
-                    # Check if result data is in response
-                    if any(word in resp.text.lower() for word in ['result', 'grade', 'gpa', 'course', 'semester', 'marks']):
-                        print(f"Found result with field: {field}")
-                        result_html = resp.text
-                        break
-            except Exception as e:
-                print(f"Error with field {field}: {e}")
-                continue
-
-        # Step 4: Try GET request with reg number
-        if not result_html:
-            get_urls = [
-                f'https://lms.uaf.edu.pk/login/index.php?regNo={reg_no}',
-                f'https://lms.uaf.edu.pk/result/index.php?reg={reg_no}',
-                f'https://lms.uaf.edu.pk/grade/report/index.php?reg={reg_no}',
-            ]
-            for url in get_urls:
-                try:
-                    resp = session.get(url, timeout=20, verify=False)
-                    if resp.status_code == 200:
-                        r_soup = BeautifulSoup(resp.text, 'html.parser')
-                        tables = r_soup.find_all('table')
-                        if tables:
-                            print(f"Found tables at: {url}")
-                            result_html = resp.text
-                            break
-                except:
-                    continue
-
-        if not result_html:
-            # Return debug info
-            return None, f"Could not fetch result. Page forms found: {len(forms)}. UAF LMS may have changed its structure."
-
-        # Parse result
-        result_soup = BeautifulSoup(result_html, 'html.parser')
-        
-        # Try to find student name
+        # Step 3: Get student name
         student_name = reg_no.upper()
-        name_patterns = [
-            result_soup.find('h1'),
-            result_soup.find('h2'),
-            result_soup.find(class_=re.compile(r'name|student', re.I)),
-            result_soup.find('td', string=re.compile(r'name', re.I)),
-        ]
-        for el in name_patterns:
-            if el and el.get_text(strip=True) and len(el.get_text(strip=True)) > 3:
-                student_name = el.get_text(strip=True)
-                break
+        for tag in ['h1','h2','h3','h4']:
+            el = result_soup.find(tag)
+            if el and el.get_text(strip=True):
+                txt = el.get_text(strip=True)
+                if len(txt) > 3 and 'uaf' not in txt.lower() and 'result' not in txt.lower():
+                    student_name = txt
+                    break
 
-        # Parse tables for courses
-        tables = result_soup.find_all('table')
+        # Step 4: Parse semester tables
         semesters = []
-        
+        tables = result_soup.find_all('table')
+
         for table in tables:
             rows = table.find_all('tr')
             if len(rows) < 2:
                 continue
-                
-            courses = []
-            sem_name = "Semester"
-            
-            # Check previous heading
-            prev = table.find_previous(['h1','h2','h3','h4','h5','h6','strong','b'])
-            if prev:
-                sem_name = prev.get_text(strip=True)
 
+            # Get semester name from previous heading
+            sem_name = 'Semester'
+            prev = table.find_previous(['h1','h2','h3','h4','h5','h6','b','strong','th'])
+            if prev:
+                txt = prev.get_text(strip=True)
+                if txt and len(txt) > 2:
+                    sem_name = txt
+
+            # Get header row to understand column positions
+            header_row = rows[0]
+            headers = [th.get_text(strip=True).lower() for th in header_row.find_all(['th','td'])]
+
+            # Find column indexes
+            name_idx = next((i for i,h in enumerate(headers) if 'course' in h or 'subject' in h or 'name' in h), 0)
+            ch_idx = next((i for i,h in enumerate(headers) if 'hr' in h or 'hour' in h or 'credit' in h or 'ch' in h), 1)
+            marks_idx = next((i for i,h in enumerate(headers) if 'mark' in h or 'obtain' in h or 'score' in h or 'total' in h), -1)
+            grade_idx = next((i for i,h in enumerate(headers) if 'grade' in h), -1)
+            gp_idx = next((i for i,h in enumerate(headers) if 'gp' in h or 'point' in h or 'quality' in h), -1)
+
+            courses = []
             for row in rows[1:]:
                 cells = row.find_all(['td','th'])
                 if len(cells) < 2:
                     continue
-                    
-                cell_texts = [c.get_text(strip=True) for c in cells]
-                
-                # Try to find marks and credit hours
-                marks = None
-                ch = None
-                course_name = cell_texts[0] if cell_texts else ''
-                
-                for text in cell_texts[1:]:
-                    # Find credit hours (usually 1-6)
-                    if re.match(r'^\d+(\(\d+-\d+\))?$', text):
-                        num = int(re.search(r'\d+', text).group())
-                        if 1 <= num <= 6 and ch is None:
-                            ch = num
-                    # Find marks (usually 0-100)
-                    elif re.match(r'^\d+\.?\d*$', text):
-                        num = float(text)
-                        if 0 <= num <= 100 and marks is None:
-                            marks = num
 
-                if course_name and ch and marks is not None:
-                    grade = marks_to_grade(marks)
-                    gp = GRADE_POINTS.get(grade, 0)
-                    courses.append({
-                        'name': course_name,
-                        'marks': marks,
-                        'grade': grade,
-                        'ch': ch,
-                        'qp': round(gp * ch, 2)
-                    })
+                cell_texts = [c.get_text(strip=True) for c in cells]
+
+                try:
+                    course_name = cell_texts[name_idx] if name_idx < len(cell_texts) else ''
+                    if not course_name or course_name.lower() in ['total','grand total','cgpa','gpa']:
+                        continue
+
+                    # Get credit hours
+                    ch = 0
+                    if ch_idx < len(cell_texts):
+                        ch_text = cell_texts[ch_idx]
+                        ch_match = re.search(r'\d+', ch_text)
+                        if ch_match:
+                            ch = int(ch_match.group())
+
+                    if ch == 0 or ch > 6:
+                        # Try to find CH from any cell
+                        for txt in cell_texts[1:]:
+                            m = re.match(r'^(\d)\(', txt)
+                            if m:
+                                ch = int(m.group(1))
+                                break
+                            elif re.match(r'^[1-6]$', txt.strip()):
+                                ch = int(txt.strip())
+                                break
+
+                    # Get grade
+                    grade = None
+                    if grade_idx >= 0 and grade_idx < len(cell_texts):
+                        g_text = cell_texts[grade_idx].strip()
+                        if g_text in GRADE_POINTS:
+                            grade = g_text
+
+                    # Get marks
+                    marks = None
+                    if marks_idx >= 0 and marks_idx < len(cell_texts):
+                        try:
+                            marks = float(cell_texts[marks_idx])
+                        except:
+                            pass
+
+                    # If no grade from column, derive from marks
+                    if not grade and marks is not None:
+                        grade = marks_to_grade(marks)
+
+                    # If still no grade, scan all cells
+                    if not grade:
+                        for txt in cell_texts:
+                            if txt.strip() in GRADE_POINTS:
+                                grade = txt.strip()
+                                break
+
+                    if not grade:
+                        continue
+
+                    # Get quality points
+                    qp = 0
+                    if gp_idx >= 0 and gp_idx < len(cell_texts):
+                        try:
+                            qp = float(cell_texts[gp_idx])
+                        except:
+                            qp = round(GRADE_POINTS.get(grade, 0) * ch, 2)
+                    else:
+                        qp = round(GRADE_POINTS.get(grade, 0) * ch, 2)
+
+                    if course_name and ch > 0 and grade:
+                        courses.append({
+                            'name': course_name,
+                            'marks': marks,
+                            'grade': grade,
+                            'ch': ch,
+                            'qp': qp
+                        })
+                except Exception as e:
+                    continue
 
             if courses:
                 sem_qp = sum(c['qp'] for c in courses)
@@ -196,7 +196,9 @@ def fetch_uaf_result(reg_no):
                 })
 
         if not semesters:
-            return None, "Result page found but could not parse course data. UAF LMS structure may have changed."
+            # Return raw HTML snippet for debugging
+            snippet = result_soup.get_text()[:500]
+            return None, f"Could not parse result. Page content: {snippet}"
 
         total_qp = sum(s['gpa'] * s['ch'] for s in semesters)
         total_ch = sum(s['ch'] for s in semesters)
@@ -228,7 +230,6 @@ def get_result():
         return jsonify({'success': False, 'error': 'Registration number required'}), 400
     if not re.match(r'^\d{4}-[a-zA-Z]+-\d+$', reg_no):
         return jsonify({'success': False, 'error': 'Invalid format. Use: 2024-ag-1234'}), 400
-
     data, error = fetch_uaf_result(reg_no)
     if error:
         return jsonify({'success': False, 'error': error}), 404
@@ -236,26 +237,40 @@ def get_result():
 
 @app.route('/api/debug', methods=['GET'])
 def debug():
-    """Debug endpoint to see UAF LMS page structure"""
     try:
         session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        session.headers.update({'User-Agent': 'Mozilla/5.0'})
         resp = session.get('https://lms.uaf.edu.pk/login/index.php', timeout=15, verify=False)
         soup = BeautifulSoup(resp.text, 'html.parser')
-        
         forms = []
         for form in soup.find_all('form'):
-            inputs = [{'name': i.get('name'), 'type': i.get('type'), 'id': i.get('id')} 
+            inputs = [{'name': i.get('name'), 'type': i.get('type'), 'id': i.get('id'), 'value': i.get('value','')} 
                      for i in form.find_all('input')]
             forms.append({'action': form.get('action'), 'id': form.get('id'), 'inputs': inputs})
-        
-        return jsonify({
-            'status': resp.status_code,
-            'title': soup.title.string if soup.title else None,
-            'forms': forms,
-        })
+        return jsonify({'status': resp.status_code, 'title': soup.title.string if soup.title else None, 'forms': forms})
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/rawresult', methods=['GET'])
+def raw_result():
+    """Get raw HTML of result page for debugging"""
+    reg_no = request.args.get('reg', '').strip()
+    try:
+        session = requests.Session()
+        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+        login_page = session.get('https://lms.uaf.edu.pk/login/index.php', timeout=15, verify=False)
+        soup = BeautifulSoup(login_page.text, 'html.parser')
+        token_input = soup.find('input', {'name': 'token'})
+        token = token_input['value'] if token_input else ''
+        result_url = 'https://lms.uaf.edu.pk/course/uaf_student_result.php'
+        resp = session.post(result_url, data={'REG': reg_no, 'token': token}, timeout=20, verify=False)
+        result_soup = BeautifulSoup(resp.text, 'html.parser')
+        tables = result_soup.find_all('table')
+        table_data = []
+        for t in tables:
+            rows = [[td.get_text(strip=True) for td in tr.find_all(['td','th'])] for tr in t.find_all('tr')]
+            table_data.append(rows)
+        return jsonify({'tables': table_data, 'text_snippet': result_soup.get_text()[:1000]})
     except Exception as e:
         return jsonify({'error': str(e)})
 
